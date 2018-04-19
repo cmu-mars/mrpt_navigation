@@ -43,6 +43,17 @@
 #include <nav_msgs/MapMetaData.h>
 #include <dynamic_reconfigure/server.h>
 
+#include <ros/xmlrpc_manager.h>
+
+#include <scn_library/systemControlRegisterService.h>
+#include <scn_library/scn_utils.h>
+#include <scn_library/scn_core.h>
+#include <scn_library/scn_node_handle.h>
+#include <scn_library/scn_service_client.h>
+#include <scn_library/scn_service_server.h>
+#include <scn_library/scn_publisher.h>
+#include <scn_library/scn_subscriber.h>
+
 #include <mrpt/math.h>
 #include <mrpt/version.h>
 #if MRPT_VERSION>=0x130
@@ -59,6 +70,7 @@
 #include "mrpt_localization/mrpt_localization.h"
 #include "mrpt_msgs/ObservationRangeBeacon.h"
 
+void demoNodeSigIntHandler(int sig);
 
 /// ROS Node
 class PFLocalizationNode : public PFLocalization
@@ -90,11 +102,18 @@ public:
     bool tf_broadcast;
   };
 
-  PFLocalizationNode(ros::NodeHandle &n);
+  PFLocalizationNode(ros::SCNNodeHandle &n);
   virtual ~PFLocalizationNode();
   void init();
+//  void unregisterDependencyToSCN();
+//  void demoNodeSigIntHandler(int sig);
+//  void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result);
+//  void saveStateCb(uint8_t reconType); 
+//  STATUS_T reconModeCb(uint8_t reconType, uint8_t command);
+//  void loadStateCb(); 
   void loop();
   void callbackLaser(const sensor_msgs::LaserScan&);
+  ros::NodeHandle& nodeHandle();
   void callbackBeacon(const mrpt_msgs::ObservationRangeBeacon&);
   void callbackRobotPose(const geometry_msgs::PoseWithCovarianceStamped&);
   void odometryForCallback(CObservationOdometryPtr&, const std_msgs::Header&);
@@ -125,7 +144,8 @@ private:
   tf::TransformBroadcaster tf_broadcaster_;
   std::map<std::string, mrpt::poses::CPose3D> laser_poses_;
   std::map<std::string, mrpt::poses::CPose3D> beacon_poses_;
-  ros::NodeHandle n_;
+  //ros::NodeHandle n_; // this handle is used in subscribing/publishing, so it needs to be patched
+  ros::SCNNodeHandle n_; 
   unsigned long loop_count_;
   void publishParticles();
   void useROSLogLevel();

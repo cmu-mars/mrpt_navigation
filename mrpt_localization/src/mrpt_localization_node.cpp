@@ -36,6 +36,8 @@
 #include <mrpt_bridge/map.h>
 #include <mrpt_bridge/beacon.h>
 
+#include <signal.h>
+
 #include <mrpt/version.h>
 #if MRPT_VERSION>=0x130
   #include <mrpt/obs/CObservationBeaconRanges.h>
@@ -50,22 +52,14 @@
 
 #include "mrpt_localization_node.h"
 
-
-int main(int argc, char **argv)
-{
-  ros::init(argc, argv, "localization");
-  ros::NodeHandle n;
-  PFLocalizationNode my_node(n);
-  my_node.init();
-  my_node.loop();
-  return 0;
-}
+// a pointer to keep track of the node reference for classless functions at the bottom
+boost::shared_ptr<PFLocalizationNode> node_ptr;
 
 PFLocalizationNode::~PFLocalizationNode()
 {
 }
 
-PFLocalizationNode::PFLocalizationNode(ros::NodeHandle &n) :
+PFLocalizationNode::PFLocalizationNode(ros::SCNNodeHandle &n) :
     PFLocalization(new PFLocalizationNode::Parameters(this)), n_(n), loop_count_(0), update_filter_(true)
 {
 }
@@ -75,15 +69,22 @@ PFLocalizationNode::Parameters *PFLocalizationNode::param()
   return (PFLocalizationNode::Parameters*)param_;
 }
 
+// this function initializes the ROS connectors, so it is patched for reconfiguration
 void PFLocalizationNode::init()
 {
   // Use MRPT library the same log level as on ROS nodes (only for MRPT_VERSION >= 0x150)
   useROSLogLevel();
 
-  PFLocalization::init();
-  subInitPose_ = n_.subscribe("initialpose", 1, &PFLocalizationNode::callbackInitialpose, this);
+  // intercept sigint
+  signal(SIGINT, demoNodeSigIntHandler);
 
-  subOdometry_ = n_.subscribe("odom", 1, &PFLocalizationNode::callbackOdometry, this);
+  PFLocalization::init();
+
+  ROS_INFO("SCN: Modified MRPT");
+
+  subInitPose_ = n_.subscribe("mrpt", "initialpose", 1, &PFLocalizationNode::callbackInitialpose, this);
+
+  subOdometry_ = n_.subscribe("mrpt", "odom", 1, &PFLocalizationNode::callbackOdometry, this);
 
   // Subscribe to one or more laser sources:
   std::vector<std::string> lstSources;
@@ -96,15 +97,15 @@ void PFLocalizationNode::init()
   {
     if (lstSources[i].find("scan") != std::string::npos)
     {
-      subSensors_[i] = n_.subscribe(lstSources[i], 1, &PFLocalizationNode::callbackLaser, this);
+      subSensors_[i] = n_.subscribe("mrpt", lstSources[i], 1, &PFLocalizationNode::callbackLaser, this);
     }
     else if (lstSources[i].find("beacon") != std::string::npos)
     {
-      subSensors_[i] = n_.subscribe(lstSources[i], 1, &PFLocalizationNode::callbackBeacon, this);
+      subSensors_[i] = n_.subscribe("mrpt", lstSources[i], 1, &PFLocalizationNode::callbackBeacon, this);
     }
     else
     {
-      subSensors_[i] = n_.subscribe(lstSources[i], 1, &PFLocalizationNode::callbackRobotPose, this);
+      subSensors_[i] = n_.subscribe("mrpt", lstSources[i], 1, &PFLocalizationNode::callbackRobotPose, this);
     }
   }
 
@@ -114,15 +115,14 @@ void PFLocalizationNode::init()
     {
       mrpt_bridge::convert(*metric_map_.m_gridMaps[0], resp_.map);
     }
-    pub_map_ = n_.advertise<nav_msgs::OccupancyGrid>("map", 1, true);
-    pub_metadata_ = n_.advertise<nav_msgs::MapMetaData>("map_metadata", 1, true);
-    service_map_ = n_.advertiseService("static_map", &PFLocalizationNode::mapCallback, this);
+    pub_map_ = n_.advertise<nav_msgs::OccupancyGrid>("mrpt", "map", 1, true);
+    pub_metadata_ = n_.advertise<nav_msgs::MapMetaData>("mrpt", "map_metadata", 1, true);
+    service_map_ = n_.advertiseService("mrpt", "static_map", &PFLocalizationNode::mapCallback, this);
   }
-  pub_Particles_ = n_.advertise<geometry_msgs::PoseArray>("particlecloud", 1, true);
+  pub_Particles_ = n_.advertise<geometry_msgs::PoseArray>("mrpt", "particlecloud", 1, true);
 
-  pub_pose_ = n_.advertise<geometry_msgs::PoseWithCovarianceStamped>("mrpt_pose", 2, true);
+  pub_pose_ = n_.advertise<geometry_msgs::PoseWithCovarianceStamped>("mrpt", "mrpt_pose", 2, true);
 }
-
 void PFLocalizationNode::loop()
 {
   ROS_INFO("loop");
@@ -315,8 +315,9 @@ bool PFLocalizationNode::waitForMap()
 {
   int wait_counter = 0;
   int wait_limit = 1;
-  clientMap_ = n_.serviceClient<nav_msgs::GetMap>("static_map");
+  clientMap_ = n_.serviceClient<nav_msgs::GetMap>("mrpt", "static_map");
   nav_msgs::GetMap srv;
+  // this client call should already be patched for reconfig due to n_ having been patched
   while (!clientMap_.call(srv) && ros::ok() && wait_counter < wait_limit)
   {
     ROS_INFO("waiting for map service!");
@@ -519,6 +520,11 @@ void PFLocalizationNode::publishPose()
   pub_pose_.publish(p);
 }
 
+// an access method used by classless functions
+ros::NodeHandle& PFLocalizationNode::nodeHandle(){ 
+  return n_; 
+} 
+
 void PFLocalizationNode::useROSLogLevel()
 {
 #if MRPT_VERSION>=0x150
@@ -530,4 +536,93 @@ void PFLocalizationNode::useROSLogLevel()
   if (loggers.find("ros.mrpt_localization") != loggers.end())
   pdf_.setVerbosityLevel(static_cast<mrpt::utils::VerbosityLevel>(loggers["ros.mrpt_localization"]));
 #endif
+}
+
+// ----------------- classless functions to handle SCN callbacks ----------------
+
+// extra function to remove SCN info upon node destruction
+void unregisterDependencyToSCN() {
+    //ros::NodeHandle n;
+    ros::ServiceClient client = node_ptr->nodeHandle().serviceClient<scn_library::systemControlRegisterService>("mrpt", "systemControlRegisterService");
+
+    scn_library::systemControlRegisterService srv;
+    srv.request.nodeName = "mrpt";
+    srv.request.depName = SCN_UNSPECIFIED;
+    srv.request.requestType = UNREGISTER;
+    srv.request.dependency = ALL;
+    srv.request.direction = SCN_UNSPECIFIED;
+
+    if (client.call(srv)) {
+        std::string res;
+        if (srv.response.result == srv.response.OK) {
+            res = "OK";
+        } else {
+            res = "ERROR";
+        }
+        ROS_INFO("result: %s\n", res.c_str());
+    } else {
+        ROS_ERROR("Failed to call systemControlRegisterService");
+    }
+}  
+
+// Replacement SIGINT handler
+void demoNodeSigIntHandler(int sig) {
+    ENTER();
+
+    unregisterDependencyToSCN();
+	// TODO save whatever necessary, maybe a pose
+	//g_request_shutdown = 1; // Set flag
+    ros::shutdown();
+    LEAVE();
+}
+
+// Replacement "shutdown" XMLRPC callback
+void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result) {
+    ENTER();
+
+    int num_params = 0;
+    if (params.getType() == XmlRpc::XmlRpcValue::TypeArray)
+        num_params = params.size();
+    if (num_params > 1)
+    {
+        std::string reason = params[1];
+        ROS_WARN("Shutdown request received. Reason: [%s]", reason.c_str());
+        unregisterDependencyToSCN();
+        //g_request_shutdown = 1; // Set flag
+    }
+
+    result = ros::xmlrpc::responseInt(1, "", 0);
+    LEAVE();
+}
+
+// saving state before shutdown
+void saveStateCb(uint8_t reconType) {
+}
+
+// entering/exiting reconfiguration mode
+STATUS_T reconModeCb(uint8_t reconType, uint8_t command) {
+    ROS_INFO("Enter MRPT recon mode callback!\n");
+	// TODO block whatever operations necessary when entering, resume when exiting
+
+    return SCN_ST_OK;
+}
+
+// loading saved state
+void loadStateCb() {
+    ROS_INFO("saveStateCb %s", __FILE__);
+}  
+
+
+// moved main past the body to deal with scoping issues
+int main(int argc, char **argv)
+{
+  // FIXME have to bring these functions out of the class and use a shared_ptr like in 
+  ros::scnInit(argc, argv, "mrpt", ros::init_options::NoSigintHandler, saveStateCb, reconModeCb, loadStateCb); // used to be called just "localization" 
+  ros::SCNNodeHandle n;
+  //ros::SCNNodeHandle nh; //wrong place to patch
+  PFLocalizationNode my_node(n);
+  node_ptr.reset(&my_node);
+  my_node.init();
+  my_node.loop();
+  return 0;
 }

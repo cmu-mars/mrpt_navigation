@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(mrpt_localization)
 
+set (CMAKE_CXX_STANDARD 11)
+add_definitions(-std=c++11)
+
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS roscpp tf std_msgs nav_msgs sensor_msgs mrpt_msgs mrpt_bridge pose_cov_ops dynamic_reconfigure)
+find_package(catkin REQUIRED COMPONENTS roscpp tf std_msgs nav_msgs sensor_msgs mrpt_msgs mrpt_bridge pose_cov_ops dynamic_reconfigure message_generation scn_library)
 
 ## System dependencies are found with CMake's conventions
 find_package(MRPT REQUIRED base gui obs slam)
@@ -65,6 +68,7 @@ add_dependencies(${PROJECT_NAME}
    mrpt_msgs_generate_messages_cpp
    ${catkin_EXPORTED_TARGETS}
    ${PROJECT_NAME}_gencfg
+   scn_library
 )
 
 ## Specify libraries to link a library or executable target against
